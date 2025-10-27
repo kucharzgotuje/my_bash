@@ -1,0 +1,9 @@
+[Unit]
+Description=Switch GNOME Terminal theme on system theme change
+
+[Service]
+ExecStart=/bin/bash -c 'gsettings monitor org.gnome.desktop.interface color-scheme | while read; do ~/.local/bin/switch-terminal-color-scheme.sh; done'
+
+[Install]
+WantedBy=default.target
+
