@@ -7,22 +7,23 @@ import Clutter from 'gi://Clutter';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
+import { Extension, gettext as _ } from 'resource:///org/gnome/shell/extensions/extension.js';
 
-// ── Stałe ─────────────────────────────────────────────────────────────────────
-const IDLE_THRESHOLD_SECONDS = 60;
+// -- Constants -----------------------------------------------------------------
+const IDLE_THRESHOLD_SECONDS = 180;
 const TICK_INTERVAL_SECONDS = 1;
-const SAVE_INTERVAL_SECONDS = 30;   // zapis na dysk co 30 s (nie co sekundę)
-const DAY_ROLLOVER_HOUR = 4;        // logiczna doba/tydzień zaczyna się o 04:00
-const HISTORY_MONTHS = 4;           // ile miesięcy wstecz pokazuje tabela
-const TOP_APPS_TRACKING = true;     // nadal zbieramy statystyki aplikacji do JSON-a
+const SAVE_INTERVAL_SECONDS = 30;   // persist to disk every 30 s, not every tick
+const DAY_ROLLOVER_HOUR = 4;        // logical day/week starts at 04:00
+const HISTORY_MONTHS = 4;           // how far back the weekly table goes
+const TOP_APPS_TRACKING = true;     // record per-app seconds in the JSON file
 const DATA_DIR = GLib.get_user_data_dir() + '/screentime-tracker';
 const DATA_FILE = DATA_DIR + '/data.json';
 
-// ── Helpers: daty ─────────────────────────────────────────────────────────────
+// -- Helpers: dates ------------------------------------------------------------
 
-// "Logiczne teraz": czas przesunięty o -DAY_ROLLOVER_HOUR godzin.
-// Dzięki temu 00:00–04:00 w poniedziałek liczy się jeszcze jako niedziela
-// (poprzedni tydzień), a nowy tydzień startuje w poniedziałek o 04:00.
+// "Logical now": wall clock shifted back by DAY_ROLLOVER_HOUR hours, so that
+// 00:00-04:00 on Monday still counts as Sunday (previous week) and a new
+// week starts Monday 04:00.
 function logicalNow() {
     return new Date(Date.now() - DAY_ROLLOVER_HOUR * 3600 * 1000);
 }
@@ -42,17 +43,17 @@ function formatDuration(seconds) {
     return `${m}m`;
 }
 
-// Poniedziałek logicznego bieżącego tygodnia (00:00:00 czasu logicznego)
+// Monday of the current logical week (00:00:00 logical time)
 function currentWeekMonday() {
     const d = logicalNow();
     d.setHours(0, 0, 0, 0);
-    const day = d.getDay(); // 0=niedziela
+    const day = d.getDay(); // 0 = Sunday
     const diff = (day === 0) ? -6 : 1 - day;
     d.setDate(d.getDate() + diff);
     return d;
 }
 
-// Suma sekund od daty startowej (włącznie) do logicznego dziś
+// Sum of seconds from a start date (inclusive) up to the logical today
 function secondsFrom(data, fromDate) {
     const today = logicalNow();
     today.setHours(0, 0, 0, 0);
@@ -80,16 +81,28 @@ function getActiveAppName() {
         if (!win) return null;
         const app = Shell.WindowTracker.get_default().get_window_app(win);
         return app ? app.get_name() : null;
-    } catch (_) {
+    } catch (_e) {
         return null;
     }
 }
 
-// ── Helpers: tabela tygodni ───────────────────────────────────────────────────
+// Locale-aware short weekday names, Monday first (2024-01-01 was a Monday).
+function localizedDayNames() {
+    const names = [];
+    for (let i = 0; i < 7; i++) {
+        const d = new Date(2024, 0, 1 + i);
+        let n = d.toLocaleDateString(undefined, { weekday: 'short' });
+        n = n.replace(/\.$/, ''); // some locales append a dot ("pon.")
+        names.push(n.charAt(0).toUpperCase() + n.slice(1));
+    }
+    return names;
+}
 
-// Buduje listę tygodni z ostatnich `monthsBack` miesięcy.
-// Każdy tydzień: { monday: Date, days: [sekundy|null ×7] } — null = przyszłość.
-// Najnowszy tydzień pierwszy.
+// -- Helpers: weekly table -----------------------------------------------------
+
+// Builds the list of weeks covering the last `monthsBack` months.
+// Each week: { monday: Date, days: [seconds|null ×7] } — null = future day.
+// Newest week first.
 function buildWeeks(data, monthsBack) {
     const today = logicalNow();
     today.setHours(0, 0, 0, 0);
@@ -97,7 +110,7 @@ function buildWeeks(data, monthsBack) {
     const start = new Date(today);
     start.setMonth(start.getMonth() - monthsBack);
     const sd = start.getDay();
-    start.setDate(start.getDate() + (sd === 0 ? -6 : 1 - sd)); // wyrównanie do pon
+    start.setDate(start.getDate() + (sd === 0 ? -6 : 1 - sd)); // align to Monday
 
     const weeks = [];
     const cur = new Date(start);
@@ -114,16 +127,16 @@ function buildWeeks(data, monthsBack) {
     return weeks.reverse();
 }
 
-// Komórka tabeli: "h:mm", "–" dla zera, "·" dla przyszłości; szerokość 5 znaków
+// Table cell: "h:mm", "–" for zero, "·" for future
 function fmtCell(sec) {
-    if (sec === null) return '·'.padStart(5);
-    if (!sec) return '–'.padStart(5);
+    if (sec === null) return '·';
+    if (!sec) return '–';
     const h = Math.floor(sec / 3600);
     const m = Math.floor((sec % 3600) / 60);
-    return `${h}:${String(m).padStart(2, '0')}`.padStart(5);
+    return `${h}:${String(m).padStart(2, '0')}`;
 }
 
-// Zakres tygodnia: "29.06–05.07"
+// Week range: "29.06–05.07"
 function fmtWeekRange(monday) {
     const sunday = new Date(monday);
     sunday.setDate(monday.getDate() + 6);
@@ -131,25 +144,33 @@ function fmtWeekRange(monday) {
     return `${dm(monday)}–${dm(sunday)}`;
 }
 
-// ── Indicator ─────────────────────────────────────────────────────────────────
+// -- Indicator -----------------------------------------------------------------
 
 const ScreenTimeIndicator = GObject.registerClass(
     class ScreenTimeIndicator extends PanelMenu.Button {
 
         _init() {
-            super._init(0.0, 'Screen Time Tracker');
+            super._init(0.0, _('Screen Time Tracker'));
 
-            this._label = new St.Label({
-                text: '0m | W: 0m | M: 0m',
+            const box = new St.BoxLayout({ style_class: 'stt-panel-box' });
+            this._stateIcon = new St.Icon({
                 y_align: Clutter.ActorAlign.CENTER,
             });
-            this.add_child(this._label);
+            this._label = new St.Label({
+                text: '0m',
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            box.add_child(this._stateIcon);
+            box.add_child(this._label);
+            this.add_child(box);
 
             this._paused = false;
             this._ticksSinceSave = 0;
+            this._saving = false;
+            this._savePending = false;
             this._data = this._loadData();
 
-            // Klucz bieżącego dnia logicznego — pilnujemy zmiany doby w _tick()
+            // Key of the current logical day — watched for rollover in _tick()
             this._currentKey = todayKey();
             this._todaySec = this._data.days?.[this._currentKey]?.total ?? 0;
 
@@ -166,17 +187,18 @@ const ScreenTimeIndicator = GObject.registerClass(
             });
 
             this._updateLabel();
+            this._updateStateIcon();
 
-            // FIX: PopupMenu.open() w popupMenu.js robi wczesny return,
-            // gdy menu jest puste (isEmpty()) — bez błędu i bez logów.
-            // Budowanie zawartości wyłącznie w 'open-state-changed' to
-            // deadlock: puste menu → open() przerywa → sygnał nigdy nie
-            // leci → menu nigdy się nie zapełnia. Dlatego budujemy je raz
-            // od razu; handler powyżej tylko odświeża dane przy otwarciu.
+            // PopupMenu.open() returns early when the menu is empty
+            // (isEmpty()), without any error or log. Building the contents
+            // only in 'open-state-changed' is therefore a deadlock: empty
+            // menu → open() bails → the signal never fires → the menu never
+            // gets populated. So build it once eagerly here; the handler
+            // above only refreshes the data on each open.
             this._rebuildMenu();
         }
 
-        // ── Tick ──────────────────────────────────────────────────────────────
+        // -- Tick ----------------------------------------------------------
 
         _tick() {
             if (this._paused) return;
@@ -184,10 +206,9 @@ const ScreenTimeIndicator = GObject.registerClass(
             const idleSec = this._idleMonitor.get_idletime() / 1000;
             if (idleSec >= IDLE_THRESHOLD_SECONDS) return;
 
-            // FIX: sesja GNOME przeżywa suspend/resume, więc doba może się
-            // zmienić w trakcie życia obiektu. Bez tego resetu _todaySec
-            // przenosił wczorajszą (albo piątkową!) sumę do nowego dnia,
-            // przez co licznik tygodniowy "nie resetował się" w poniedziałek.
+            // A GNOME session survives suspend/resume, so the (logical) day
+            // can change during this object's lifetime. Without this reset,
+            // _todaySec would carry yesterday's total into the new day.
             const key = todayKey();
             if (key !== this._currentKey) {
                 this._currentKey = key;
@@ -209,7 +230,6 @@ const ScreenTimeIndicator = GObject.registerClass(
                 }
             }
 
-            // Zapis co SAVE_INTERVAL_SECONDS zamiast co sekundę
             if (++this._ticksSinceSave >= SAVE_INTERVAL_SECONDS) {
                 this._saveData();
                 this._ticksSinceSave = 0;
@@ -218,42 +238,58 @@ const ScreenTimeIndicator = GObject.registerClass(
             this._updateLabel();
         }
 
-        // ── Label ─────────────────────────────────────────────────────────────
+        // -- Label ---------------------------------------------------------
 
         _updateLabel() {
             const wSec = currentWeekSeconds(this._data);
             const mSec = currentMonthSeconds(this._data);
-            const pause = this._paused ? ' ⏸' : '';
             this._label.set_text(
-                `${formatDuration(this._todaySec)} | W: ${formatDuration(wSec)} | M: ${formatDuration(mSec)}${pause}`
+                `Today: ${formatDuration(this._todaySec)} | Week: ${formatDuration(wSec)} | Month: ${formatDuration(mSec)}`
             );
         }
 
-        // ── Popup: tabela tygodniowa ──────────────────────────────────────────
+        // Recording state icon: red record dot while tracking, pause bars
+        // while paused. Cached so per-tick calls don't touch St properties.
+        _updateStateIcon() {
+            const recording = !this._paused;
+            if (this._iconRecording === recording) return;
+            this._iconRecording = recording;
+            this._stateIcon.icon_name = recording
+                ? 'media-record-symbolic'
+                : 'media-playback-pause-symbolic';
+            this._stateIcon.style_class = recording
+                ? 'stt-state-icon stt-icon-recording'
+                : 'stt-state-icon stt-icon-paused';
+        }
+
+        // -- Popup: weekly table -------------------------------------------
 
         _rebuildMenu() {
-            // Wyjątek w handlerze 'open-state-changed' zabija budowanie menu
-            // po cichu — dlatego łapiemy go, logujemy i pokazujemy w menu.
+            // An exception inside the 'open-state-changed' handler kills
+            // menu construction silently — catch it, log it, show it.
             try {
                 this._buildMenuContents();
             } catch (e) {
-                console.error('ScreenTimeTracker: błąd budowania menu', e);
+                console.error('ScreenTimeTracker: failed to build menu', e);
                 this.menu.removeAll();
                 this.menu.addMenuItem(new PopupMenu.PopupMenuItem(
-                    `Błąd: ${e.message}`, { reactive: false }));
+                    `${_('Error')}: ${e.message}`, { reactive: false }));
             }
         }
 
         _buildMenuContents() {
             this.menu.removeAll();
 
-            // Przycisk pauzy
-            const pauseItem = new PopupMenu.PopupMenuItem(this._paused ? '▶  Wznów' : '⏸  Pauzuj');
+            // Pause toggle
+            const pauseItem = new PopupMenu.PopupMenuItem(
+                this._paused ? `▶  ${_('Resume')}` : `⏸  ${_('Pause')}`);
             pauseItem.connect('activate', () => {
                 this._paused = !this._paused;
-                this._saveData(); // flush przy pauzie — dane zawsze aktualne
+                this._saveData(); // flush on pause — data always current
                 this._updateLabel();
-                pauseItem.label.set_text(this._paused ? '▶  Wznów' : '⏸  Pauzuj');
+                this._updateStateIcon();
+                pauseItem.label.set_text(
+                    this._paused ? `▶  ${_('Resume')}` : `⏸  ${_('Pause')}`);
             });
             this.menu.addMenuItem(pauseItem);
             this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
@@ -261,16 +297,13 @@ const ScreenTimeIndicator = GObject.registerClass(
             const weeks = buildWeeks(this._data, HISTORY_MONTHS);
             const hasData = weeks.some(w => w.days.some(s => s));
             if (!hasData) {
-                this._addMonoRow('Brak danych');
+                this._addTableRow([_('No data')]);
                 return;
             }
 
-            // Nagłówek
-            const header =
-                'Tydzień'.padEnd(14) +
-                ['Pn', 'Wt', 'Śr', 'Cz', 'Pt', 'So', 'Nd', 'SUMA']
-                    .map(s => s.padStart(5)).join(' ');
-            this._addMonoRow(header, true);
+            // Header row: localized weekday names + SUM
+            this._addTableRow(
+                [_('Week'), ...localizedDayNames(), _('SUM')], true);
 
             const thisMondayKey = dateKey(currentWeekMonday());
             let grandTotal = 0;
@@ -278,36 +311,55 @@ const ScreenTimeIndicator = GObject.registerClass(
             for (const week of weeks) {
                 const sum = week.days.reduce((s, v) => s + (v ?? 0), 0);
                 if (sum === 0 && dateKey(week.monday) !== thisMondayKey)
-                    continue; // pomiń całkiem puste tygodnie (poza bieżącym)
+                    continue; // skip fully empty weeks (except the current one)
                 grandTotal += sum;
 
-                const marker = dateKey(week.monday) === thisMondayKey ? '▶ ' : '  ';
-                const row =
-                    (marker + fmtWeekRange(week.monday)).padEnd(14) +
-                    week.days.map(fmtCell).join(' ') + ' ' +
-                    fmtCell(sum);
-                this._addMonoRow(row);
+                const marker = dateKey(week.monday) === thisMondayKey ? '▶ ' : '';
+                this._addTableRow([
+                    marker + fmtWeekRange(week.monday),
+                    ...week.days.map(fmtCell),
+                    fmtCell(sum),
+                ]);
             }
 
             this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-            this._addMonoRow(
-                `Razem (${HISTORY_MONTHS} mies.)`.padEnd(14 + 6 * 7) + fmtCell(grandTotal),
-                true
-            );
+
+            // Total row: label expands, value lands under the SUM column
+            // (the table rows are the widest menu items, so the row's right
+            // edge coincides with the SUM column's right edge).
+            const totalItem = new PopupMenu.PopupBaseMenuItem({ reactive: false });
+            totalItem.add_child(new St.Label({
+                text: _('Total (last 4 months)'),
+                style_class: 'stt-cell stt-cell-week stt-row-header',
+                x_expand: true,
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            totalItem.add_child(new St.Label({
+                text: fmtCell(grandTotal),
+                style_class: 'stt-cell stt-row-header',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            this.menu.addMenuItem(totalItem);
         }
 
-        // Wiersz tabeli: standardowy PopupMenuItem (sprawdzony w każdej wersji
-        // Shella) z przestylowanym wbudowanym labelem — bez ręcznego add_child.
-        _addMonoRow(text, bold = false) {
-            const item = new PopupMenu.PopupMenuItem(text, { reactive: false });
-            item.label.set_style(
-                'font-family: monospace; font-size: 9.5pt;' +
-                (bold ? ' font-weight: bold;' : '')
-            );
+        // Table row: one fixed-width St.Label per cell (styling lives in
+        // stylesheet.css), so columns line up regardless of glyph widths.
+        _addTableRow(cells, header = false) {
+            const item = new PopupMenu.PopupBaseMenuItem({ reactive: false });
+            cells.forEach((text, i) => {
+                const label = new St.Label({
+                    text,
+                    y_align: Clutter.ActorAlign.CENTER,
+                    style_class: i === 0 ? 'stt-cell stt-cell-week' : 'stt-cell',
+                });
+                if (header)
+                    label.add_style_class_name('stt-row-header');
+                item.add_child(label);
+            });
             this.menu.addMenuItem(item);
         }
 
-        // ── Dane ──────────────────────────────────────────────────────────────
+        // -- Data ----------------------------------------------------------
 
         _loadData() {
             try {
@@ -320,12 +372,45 @@ const ScreenTimeIndicator = GObject.registerClass(
                 const [, contents] = file.load_contents(null);
                 return JSON.parse(new TextDecoder().decode(contents));
             } catch (e) {
-                console.error('ScreenTimeTracker: błąd odczytu danych', e);
+                console.error('ScreenTimeTracker: failed to read data', e);
                 return {};
             }
         }
 
+        // Asynchronous save: never blocks the compositor thread. Concurrent
+        // calls coalesce — if a write is in flight, remember and re-save
+        // once it finishes.
         _saveData() {
+            if (this._saving) {
+                this._savePending = true;
+                return;
+            }
+            this._saving = true;
+
+            const bytes = new GLib.Bytes(
+                new TextEncoder().encode(JSON.stringify(this._data, null, 2)));
+            const file = Gio.File.new_for_path(DATA_FILE);
+            file.replace_contents_bytes_async(
+                bytes, null, false,
+                Gio.FileCreateFlags.REPLACE_DESTINATION,
+                null,
+                (f, res) => {
+                    try {
+                        f.replace_contents_finish(res);
+                    } catch (e) {
+                        console.error('ScreenTimeTracker: failed to save data', e);
+                    }
+                    this._saving = false;
+                    if (this._savePending) {
+                        this._savePending = false;
+                        this._saveData();
+                    }
+                });
+        }
+
+        // Final synchronous flush — used only from destroy(), where async
+        // completion can no longer be awaited.
+        _saveDataSync() {
             try {
                 const file = Gio.File.new_for_path(DATA_FILE);
                 file.replace_contents(
@@ -335,27 +420,26 @@ const ScreenTimeIndicator = GObject.registerClass(
                     null
                 );
             } catch (e) {
-                console.error('ScreenTimeTracker: błąd zapisu danych', e);
+                console.error('ScreenTimeTracker: failed to save data', e);
             }
         }
 
-        // ── Cleanup ───────────────────────────────────────────────────────────
+        // -- Cleanup -------------------------------------------------------
 
         destroy() {
             if (this._timerId) {
                 GLib.source_remove(this._timerId);
                 this._timerId = null;
             }
-            this._saveData(); // flush — nie gubimy ostatnich ≤30 s
+            this._saveDataSync(); // don't lose the last ≤30 s
             super.destroy();
         }
     });
 
-// ── Extension lifecycle ───────────────────────────────────────────────────────
+// -- Extension lifecycle -------------------------------------------------------
 
-export default class ScreenTimeExtension {
+export default class ScreenTimeExtension extends Extension {
     enable() {
-        console.log('[ScreenTimeTracker] v3 loaded');
         this._indicator = new ScreenTimeIndicator();
         Main.panel.addToStatusArea('screentime-tracker', this._indicator);
     }

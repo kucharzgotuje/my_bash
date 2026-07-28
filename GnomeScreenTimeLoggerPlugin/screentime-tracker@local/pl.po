@@ -1,0 +1,32 @@
+# Polish translation for Screen Time Tracker.
+msgid ""
+msgstr ""
+"Project-Id-Version: screentime-tracker 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language: pl\n"
+"Plural-Forms: nplurals=3; plural=(n==1 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
+
+msgid "Screen Time Tracker"
+msgstr "Licznik czasu przy ekranie"
+
+msgid "Pause"
+msgstr "Pauzuj"
+
+msgid "Resume"
+msgstr "Wznów"
+
+msgid "No data"
+msgstr "Brak danych"
+
+msgid "Week"
+msgstr "Tydzień"
+
+msgid "SUM"
+msgstr "SUMA"
+
+msgid "Total (last 4 months)"
+msgstr "Razem (ostatnie 4 miesiące)"
+
+msgid "Error"
+msgstr "Błąd"
