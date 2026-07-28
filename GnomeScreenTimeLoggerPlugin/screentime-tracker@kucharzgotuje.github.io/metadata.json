@@ -1,0 +1,14 @@
+{
+  "uuid": "screentime-tracker@kucharzgotuje.github.io",
+  "name": "Screen Time Tracker",
+  "description": "Tracks active screen time per day with idle detection and on-demand pause. Panel shows today / week / month totals; the menu shows a weekly table of the last four months. Weeks start Monday 4 AM. Only application names are recorded, never window titles or content. Data stays local in ~/.local/share/screentime-tracker/.",
+  "shell-version": [
+    "45",
+    "46",
+    "47",
+    "48"
+  ],
+  "url": "https://github.com/kucharzgotuje/my_bash/tree/main/GnomeScreenTimeLoggerPlugin",
+  "gettext-domain": "screentime-tracker",
+  "version-name": "1.0"
+}

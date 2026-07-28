@@ -1,0 +1,39 @@
+/* -- Panel indicator ------------------------------------------------------- */
+
+.stt-panel-box {
+    spacing: 6px;
+}
+
+.stt-state-icon {
+    icon-size: 12px;
+}
+
+.stt-icon-recording {
+    color: #ed333b; /* GNOME red — reads as "recording" */
+}
+
+.stt-icon-paused {
+    color: #b8bfc9;
+}
+
+/* -- Weekly table ---------------------------------------------------------- */
+
+/* Every cell is its own fixed-minimum-width label, so columns stay aligned
+   no matter what glyphs (▶, –, ·, localized day names) end up inside. */
+.stt-cell {
+    font-family: 'Ubuntu Sans Mono', 'Ubuntu Mono', monospace;
+    font-size: 9.5pt;
+    min-width: 3.6em;
+    text-align: right;
+}
+
+/* First column: week range, left-aligned and wider */
+.stt-cell-week {
+    min-width: 8.5em;
+    text-align: left;
+}
+
+.stt-row-header {
+    font-weight: bold;
+    color: #b8bfc9;
+}

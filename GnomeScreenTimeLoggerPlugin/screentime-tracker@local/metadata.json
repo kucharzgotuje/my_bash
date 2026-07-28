@@ -1,7 +1,0 @@
-{
-  "name": "Screen Time Tracker",
-  "description": "Tracks daily and weekly screen time with idle detection.",
-  "uuid": "screentime-tracker@local",
-  "shell-version": ["46"],
-  "version": 1
-}
